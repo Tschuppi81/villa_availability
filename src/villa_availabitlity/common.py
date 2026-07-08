@@ -17,6 +17,7 @@ MONTHS_AHEAD = 6
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / 'data'
 PLOTS_DIR = PROJECT_ROOT / 'plots'
+REPORTS_DIR = PROJECT_ROOT / 'reports'
 
 # Intervillas labels its months in German, NMB in English.
 MONTH_ABBR_DE = ['Jan', 'Feb', 'Mar', 'Apr', 'Mai', 'Jun',
@@ -279,7 +280,7 @@ def _table_row(first: str, cells: list[str], average: str,
 
 
 def print_availability_results(villas: list[dict], today: date = None,
-                               year: int = None) -> None:
+                               year: int = None) -> list[str]:
     """
     Print the availability results. The format is like the following:
     #            | month 1 | month 2 | ..
@@ -289,9 +290,12 @@ def print_availability_results(villas: list[dict], today: date = None,
 
     The average column covers `year` only (the current one by default), so it
     is not diluted by the previous year's months.
+
+    Returns the rendered lines, so the very same table can go into a PDF
+    without being laid out a second time.
     """
     if not villas:
-        return None
+        return []
 
     today = today or date.today()
     year = year or today.year
@@ -303,56 +307,63 @@ def print_availability_results(villas: list[dict], today: date = None,
     sep_line = _table_row('-' * 30, ['-' * 8] * len(unique_months), '-' * 8,
                           boundary, separator='+')
 
-    print(sep_line)
-    print(_table_row('Villa', unique_months, f'Avg {year}', boundary))
-    print(sep_line)
+    lines = [sep_line,
+             _table_row('Villa', unique_months, f'Avg {year}', boundary),
+             sep_line]
 
-    # Print villa blocked days for each month
+    # A villa's blocked days for each month
     for villa in villas:
         months = {month['month_name']: month for month in villa['months']}
         cells = [_format_percentage(
             (months.get(month) or {}).get('percentage_blocked'))
             for month in unique_months]
-        print(_table_row(villa['name'][:30], cells, _format_percentage(
+        lines.append(_table_row(villa['name'][:30], cells, _format_percentage(
             average_for_year(villa['months'], year)), boundary))
 
-    print(sep_line)
+    lines.append(sep_line)
 
     # And the portfolio as a whole, which is what a season actually looks like
     averages = portfolio_percentages(villas, unique_months)
     known = [value for month, value in averages.items()
              if value is not None and parse_month_label(month)[0] == year]
-    print(_table_row(f'ALL VILLAS (n={len(villas)})',
-                     [_format_percentage(averages[m]) for m in unique_months],
-                     _format_percentage(
-                         sum(known) / len(known) if known else None), boundary))
-    print(sep_line)
+    lines.append(_table_row(
+        f'ALL VILLAS (n={len(villas)})',
+        [_format_percentage(averages[m]) for m in unique_months],
+        _format_percentage(sum(known) / len(known) if known else None),
+        boundary))
+    lines.append(sep_line)
 
     if boundary is not None:
-        print('‖ left: realized occupancy | right: bookings taken so far '
-              '(still rising)')
-    print(f"Avg {year} mixes realized and forecast months, so it understates "
-          f"the year")
-    print("'-' means no data was ever collected for that month")
+        lines.append('‖ left: realized occupancy | right: bookings taken so '
+                     'far (still rising)')
+    lines.append(f'Avg {year} mixes realized and forecast months, so it '
+                 f'understates the year')
+    lines.append("'-' means no data was ever collected for that month")
+
+    print('\n'.join(lines))
+    return lines
 
 
 def print_year_comparison(villas: list[dict], abbr: list[str],
-                          today: date = None) -> None:
+                          today: date = None) -> list[str]:
     """Compare each villa's occupancy against the same months a year earlier.
 
     Only the elapsed months of the current year are used, on both sides, so the
     two figures mean the same thing. Comparing a finished year against one that
     is half forecast would show every villa 'down'.
+
+    Returns the rendered lines, so the very same table can go into a PDF
+    without being laid out a second time.
     """
     if not villas:
-        return None
+        return []
 
     today = today or date.today()
     year, previous = today.year, today.year - 1
     numbers = elapsed_months(today)
     if not numbers:
         print(f'No month of {year} has elapsed yet -- nothing to compare')
-        return None
+        return []
 
     current_labels = month_labels([(year, m) for m in numbers], abbr)
     previous_labels = month_labels([(previous, m) for m in numbers], abbr)
@@ -364,11 +375,11 @@ def print_year_comparison(villas: list[dict], abbr: list[str],
     sep_line = _table_row('-' * 30, ['-' * 8] * len(headers), '-' * 8, None,
                           separator='+')
 
-    print(f'--- {window} {previous} vs {window} {year} '
-          f'(percentage points) ---')
-    print(sep_line)
-    print(_table_row('Villa', headers, 'Delta', None))
-    print(sep_line)
+    lines = [f'--- {window} {previous} vs {window} {year} '
+             f'(percentage points) ---',
+             sep_line,
+             _table_row('Villa', headers, 'Delta', None),
+             sep_line]
 
     for villa in villas:
         months = {month['month_name']: month for month in villa['months']}
@@ -382,10 +393,10 @@ def print_year_comparison(villas: list[dict], abbr: list[str],
         before = average_for_labels(villa['months'], previous_labels)
         after = average_for_labels(villa['months'], current_labels)
         cells += [_format_percentage(before), _format_percentage(after)]
-        print(_table_row(villa['name'][:30], cells,
-                         _format_delta(_delta(after, before)), None))
+        lines.append(_table_row(villa['name'][:30], cells,
+                                _format_delta(_delta(after, before)), None))
 
-    print(sep_line)
+    lines.append(sep_line)
 
     # the portfolio as a whole, month by month
     averages = portfolio_percentages(villas, previous_labels + current_labels)
@@ -400,12 +411,15 @@ def print_year_comparison(villas: list[dict], abbr: list[str],
     after = sum(known) / len(known) if known else None
 
     cells += [_format_percentage(before), _format_percentage(after)]
-    print(_table_row(f'ALL VILLAS (n={len(villas)})', cells,
-                     _format_delta(_delta(after, before)), None))
-    print(sep_line)
-    print(f'Month columns are {year} minus {previous}, in percentage points; '
-          f'+ means busier than last year')
-    print("'-' means one of the two years has no data for that month")
+    lines.append(_table_row(f'ALL VILLAS (n={len(villas)})', cells,
+                            _format_delta(_delta(after, before)), None))
+    lines.append(sep_line)
+    lines.append(f'Month columns are {year} minus {previous}, in percentage '
+                 f'points; + means busier than last year')
+    lines.append("'-' means one of the two years has no data for that month")
+
+    print('\n'.join(lines))
+    return lines
 
 
 def draw_availability_heatmap(villas: list[dict], filename='',

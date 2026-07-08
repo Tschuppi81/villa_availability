@@ -45,6 +45,10 @@ follow this convention, which keeps their numbers comparable.
 | 2 | Load data and visualize it | Prints a table for the last and the current year, and writes a heatmap to `plots/` |
 | 3 | Compare this year with the last | Year-over-year table, restricted to the months that have fully elapsed |
 
+Menu 2 and 3 also write whatever they printed to `reports/<YYYYMMDD>_<source>.pdf`,
+on a page sized to the table rather than to A4 -- the tables are a few hundred
+columns wide, so a fixed paper size would shrink them past legibility.
+
 ## How the data is kept
 
 Each run of menu 1 writes one snapshot per source. A snapshot only ever holds

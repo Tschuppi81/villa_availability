@@ -1,13 +1,14 @@
 from datetime import date, datetime
 
 from src.villa_availabitlity.common import MONTH_ABBR_DE, MONTH_ABBR_EN, \
-    PLOTS_DIR, draw_availability_heatmap, load_villa_history, month_labels, \
-    print_availability_results, print_year_comparison, select_months, \
-    store_villa_data
+    PLOTS_DIR, REPORTS_DIR, draw_availability_heatmap, load_villa_history, \
+    month_labels, print_availability_results, print_year_comparison, \
+    select_months, store_villa_data
 
 SOURCES = (('nmb', MONTH_ABBR_EN), ('intervillas', MONTH_ABBR_DE))
 from src.villa_availabitlity.intervillas import scrape_intervillas
 from src.villa_availabitlity.nmb import scrape_nmb
+from src.villa_availabitlity.pdf import write_text_pdf
 from src.villa_availabitlity.t_menu import Menu
 
 today = datetime.today().strftime('%Y%m%d')
@@ -36,7 +37,10 @@ def show_data(label: str, abbr: list[str]) -> None:
     """Table over the last and the current year, heatmap of the current one."""
     year = date.today().year
     villas = select_months(load_villa_history(label), reported_months(abbr))
-    print_availability_results(villas)
+    lines = print_availability_results(villas)
+    write_text_pdf(lines, REPORTS_DIR / f'{today}_{label}.pdf',
+                   title=f'{label}: percentage of days blocked '
+                         f'({date.today().isoformat()})')
     draw_availability_heatmap(
         villas, PLOTS_DIR / f'{today}_{label}.png',
         title=f'{label} {year}: percentage of days blocked')
@@ -53,7 +57,10 @@ def compare_years():
         print(f'--- Compare {label} year over year ---')
         villas = select_months(load_villa_history(label),
                                reported_months(abbr))
-        print_year_comparison(villas, abbr)
+        lines = print_year_comparison(villas, abbr)
+        write_text_pdf(lines, REPORTS_DIR / f'{today}_{label}_comparison.pdf',
+                       title=f'{label}: year over year '
+                             f'({date.today().isoformat()})')
 
 
 if __name__ == "__main__":
