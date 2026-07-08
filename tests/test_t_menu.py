@@ -1,97 +1,151 @@
 from unittest.mock import Mock
 
+import pytest
+
 from src.villa_availabitlity.t_menu import Menu
 
 
-def test_single_menu(capsys, monkeypatch):
-    monkeypatch.setattr('builtins.input', lambda _: 1)
+@pytest.fixture
+def answer(monkeypatch):
+    """Feed `input()` a scripted sequence of answers.
 
-    the_function = Mock()
+    Running out of answers means the menu kept re-prompting, which is a real
+    failure -- so say that rather than leaking a bare StopIteration.
+    """
 
-    title = 'The Menu'
-    m = Menu(1, title, the_function)
-    m.run()
+    def _answer(*answers):
+        remaining = iter(answers)
 
-    out, err = capsys.readouterr()
-    assert title in out
+        def fake_input(_prompt=''):
+            try:
+                return next(remaining)
+            except StopIteration:
+                raise AssertionError(
+                    f'menu asked for more input than the {len(answers)} '
+                    f'answer(s) given: {answers}') from None
 
-    the_function.assert_called_once()
+        monkeypatch.setattr('builtins.input', fake_input)
 
-
-def test_two_main_menus(capsys, monkeypatch):
-    monkeypatch.setattr('builtins.input', lambda _: 'M2')
-
-    main_function = Mock()
-    m1_function = Mock()
-    m2_function = Mock()
-
-    main_title = 'Main Menu'
-    m = Menu(1, main_title, main_function)
-
-    main_1_tile = 'Main 1'
-    m1 = Menu('M1', main_1_tile, m1_function)
-    m.add_sub_menu(m1)
-
-    main_2_tile = 'Main 2'
-    m2 = Menu('M2', main_2_tile, m2_function)
-    m.add_sub_menu(m2)
-
-    m.run()
-
-    out, err = capsys.readouterr()
-    assert main_title in out
-    assert main_1_tile in out
-    assert main_2_tile in out
-
-    m1_function.assert_not_called()
-    m2_function.assert_called_once()
+    return _answer
 
 
-def test_with_sub_menu(capsys, monkeypatch):
-    def inputs():
-        yield '2'
-        yield '21'
+def test_normalises_ids_so_2_and_str_2_are_the_same_menu():
+    assert Menu(2, 'x').id == Menu('2', 'x').id == 2
 
-    user_inputs = inputs()
-    monkeypatch.setattr('builtins.input', lambda _: next(user_inputs))
 
-    m11_function = Mock()
-    m21_function = Mock()
-    m22_function = Mock()
+def test_lowercases_string_ids():
+    assert Menu('M2', 'x').id == 'm2'
 
-    main_title = 'Main Menu'
-    m = Menu('root', main_title)
 
-    main1_tile = 'Main 1'
-    m1 = Menu('1', main1_tile)
-    m.add_sub_menu(m1)
+def test_repr_and_str_show_the_menu_and_its_children():
+    menu = Menu('root', 'Main Menu')
+    menu.add_sub_menu(Menu(1, 'First'))
 
-    main2_title = 'Main 2'
-    m2 = Menu('2', main2_title)
-    m.add_sub_menu(m2)
+    assert repr(menu) == 'Menu(root, Main Menu)'
+    assert 'Main Menu' in str(menu)
+    assert '1: First' in str(menu)
 
-    sub11_title = 'Sub 11'
-    s11 = Menu('11', sub11_title, m11_function)
-    m1.add_sub_menu(s11)
 
-    sub21_title = 'Sub 21'
-    s21 = Menu('21', sub21_title, m21_function)
-    m2.add_sub_menu(s21)
+def test_calling_a_menu_without_a_function_is_a_no_op():
+    Menu(1, 'x')()  # must not raise
 
-    sub22_title = 'Sub 22'
-    s22 = Menu('22', sub22_title, m22_function)
-    m2.add_sub_menu(s22)
 
-    m.run()
+def test_runs_the_function_of_a_single_menu(capsys, answer):
+    function = Mock()
+    answer('1')
 
-    out, err = capsys.readouterr()
-    assert main_title in out
-    assert main1_tile in out
-    assert main2_title in out
-    assert sub11_title not in out
-    assert sub21_title in out
-    assert sub22_title in out
+    Menu(1, 'The Menu', function).run()
 
-    m11_function.assert_not_called()
-    m22_function.assert_not_called()
-    m21_function.assert_called_once()
+    assert 'The Menu' in capsys.readouterr().out
+    function.assert_called_once()
+
+
+def test_runs_the_chosen_sibling_only(capsys, answer):
+    first, second = Mock(), Mock()
+
+    menu = Menu(1, 'Main Menu')
+    menu.add_sub_menu(Menu('M1', 'Main 1', first))
+    menu.add_sub_menu(Menu('M2', 'Main 2', second))
+
+    answer('M2')
+    menu.run()
+
+    out = capsys.readouterr().out
+    assert 'Main 1' in out and 'Main 2' in out
+    first.assert_not_called()
+    second.assert_called_once()
+
+
+def test_string_ids_are_matched_case_insensitively(answer):
+    function = Mock()
+
+    menu = Menu('root', 'Main Menu')
+    menu.add_sub_menu(Menu('M2', 'Main 2', function))
+
+    answer('m2')
+    menu.run()
+
+    function.assert_called_once()
+
+
+def test_digit_ids_given_as_strings_are_selectable(answer):
+    """Regression: `Menu('2')` used to be impossible to choose, because
+    `input()` returns '2' which was coerced to int and never matched."""
+    function = Mock()
+
+    menu = Menu('root', 'Main Menu')
+    menu.add_sub_menu(Menu('2', 'Main 2', function))
+
+    answer('2')
+    menu.run()
+
+    function.assert_called_once()
+
+
+def test_descends_into_a_sub_menu(capsys, answer):
+    sub, other = Mock(), Mock()
+
+    menu = Menu('root', 'Main Menu')
+    branch = Menu('2', 'Main 2')
+    menu.add_sub_menu(Menu('1', 'Main 1', other))
+    menu.add_sub_menu(branch)
+    branch.add_sub_menu(Menu('21', 'Sub 21', sub))
+
+    answer('2', '21')
+    menu.run()
+
+    assert 'Sub 21' in capsys.readouterr().out
+    sub.assert_called_once()
+    other.assert_not_called()
+
+
+def test_reprompts_on_an_unknown_choice_and_reports_what_was_typed(capsys,
+                                                                   answer):
+    function = Mock()
+
+    menu = Menu('root', 'Main Menu')
+    menu.add_sub_menu(Menu(1, 'Main 1', function))
+
+    answer('9', 'nope', '1')
+    menu.run()
+
+    out = capsys.readouterr().out
+    assert 'Invalid menu id 9.' in out  # the choice, not the parent's id
+    assert 'Invalid menu id nope.' in out
+    function.assert_called_once()
+
+
+def test_get_menu_by_id_rejects_an_unknown_id():
+    menu = Menu('root', 'Main Menu')
+    menu.add_sub_menu(Menu(1, 'Main 1'))
+
+    with pytest.raises(ValueError, match='Invalid menu id 7'):
+        menu._get_menu_by_id(7)
+
+
+def test_choosing_a_leaf_without_a_function_fails_loudly(answer):
+    menu = Menu(1, 'Dead End')  # no function attached
+
+    answer('1')
+    with pytest.raises(AssertionError):
+        menu.run()

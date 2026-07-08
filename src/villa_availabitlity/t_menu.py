@@ -2,10 +2,21 @@
 class Menu:
 
     def __init__(self, id: int | str, title, function=None):
-        self.id = id.lower() if isinstance(id, str) else id
+        self.id = self._normalise_id(id)
         self.title = title
         self.function = function
         self.sub_menus = []
+
+    @staticmethod
+    def _normalise_id(id: int | str) -> int | str:
+        """`Menu(2)` and `Menu('2')` must name the same menu.
+
+        `input()` only ever yields strings, so a menu registered under the
+        string '2' would otherwise be impossible to choose.
+        """
+        if isinstance(id, str):
+            return int(id) if id.isdigit() else id.lower()
+        return id
 
     def add_sub_menu(self, sub_menu: 'Menu') -> None:
         self.sub_menus.append(sub_menu)
@@ -22,15 +33,14 @@ class Menu:
         menu()
 
     def _wait_for_user(self):
-        choice = input('Your choice: ')
-        choice = int(choice) if choice.isdigit() else choice.lower()
+        choice = self._normalise_id(input('Your choice: '))
 
         ids = [m.id for m in self.sub_menus]
         ids.append(self.id)
         if choice in ids:
             return self._get_menu_by_id(choice)
         else:
-            print(f'Invalid menu id {self.id}. Valid ids are {ids}')
+            print(f'Invalid menu id {choice}. Valid ids are {ids}')
             return self._wait_for_user()
 
     def _get_menu_by_id(self, id: int | str):
