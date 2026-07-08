@@ -1,116 +1,126 @@
+"""Retrieve villa availability from the Intervillas Florida Directus API.
+
+The site is a Vue SPA backed by a public Directus instance proxied under the
+same origin, so no browser rendering is needed anymore. Availability is derived
+from the `bookings` collection: a booking blocks the nights `[start_date,
+end_date)`, i.e. the check-in day is blocked and the check-out day is free
+again for the next guest.
+"""
+
+from collections import defaultdict
+from datetime import date, timedelta
+
 import requests
 
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.select import Select
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from src.villa_availabitlity.common import MONTH_ABBR_DE, make_month_entry, \
+    average_percentage_blocked, get_month_days, month_labels, month_window
 
-from src.villa_availabitlity.common import get_month_days, \
-    calculate_percentage_blocked
+API_BASE = 'https://www.intervillas-florida.com'
+VILLA_LIST_PATH = 'ferienhaus-cape-coral'
+SITE = 'florida'
 
-options = Options()
-options.headless = True
-options.add_argument("--window-size=1920,1200")
+# Booking states that make a day unavailable ('blocked' are turnover/owner days)
+BLOCKING_STATUSES = 'pending,confirmed,blocked'
 
-driver = webdriver.Chrome(
-    options=options, service=Service('/usr/bin/chromedriver'))
+# The relaunch migrated only the bookings that were still live at cutover, so
+# earlier months hold nothing but the residue of long stays reaching into 2026.
+# Reporting those as '0% booked' would be a lie; months before the floor are
+# left to the archived snapshots in `data/` instead. See `load_villa_history`.
+DIRECTUS_HISTORY_FLOOR = date(2026, 1, 1)
+
+TIMEOUT = 30
 
 
-def get_intervillas(url) -> list[dict]:
-    villas = []
+def _get_items(collection: str, **params) -> list[dict]:
+    response = requests.get(f'{API_BASE}/items/{collection}', params=params,
+                            timeout=TIMEOUT)
+    response.raise_for_status()
+    return response.json()['data']
 
-    base_url, rel_url = url.rsplit('/', 1)
 
-    # Fetch HTML content
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
+def get_intervillas() -> list[dict]:
+    """Return the published villas as dicts with `id`, `name` and `url`."""
+    items = _get_items(
+        'villas',
+        **{'filter[status][_eq]': 'published',
+           f'filter[site_{SITE}][_eq]': 'true',
+           'fields': 'id,name,slug',
+           'sort': 'sort',
+           'limit': -1},
+    )
 
-    # find each villa
-    for v in soup.find_all('div', class_='ident'):
-        villa = {}
-        villa['name'] = v.find('h4').text.strip()
-        villa['url'] = base_url + v.find('a')['href']
-        villas.append(villa)
-
-        # for testing
-        if len(villas) > 5:
-            break
+    villas = [{'id': item['id'],
+               'name': item['name'].strip(),
+               'url': f'{API_BASE}/{VILLA_LIST_PATH}/{item["slug"]}'}
+              for item in items]
 
     print(f'Found {len(villas)} villas')
     return sorted(villas, key=lambda v: v['name'])
 
 
-def get_available_and_blocked_days_intervillas(url) -> tuple[str, int]:
-    month_str = ''
-
-    # Navigate to the URL with JavaScript rendering
-    driver.get(url)
-
-    # Wait for some element to be present (loading time)
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.CLASS_NAME, 'date'))
+def get_bookings_by_villa() -> dict[int, list[tuple[date, date]]]:
+    """Fetch every blocking booking in one request, grouped by villa id."""
+    items = _get_items(
+        'bookings',
+        **{'filter[status][_in]': BLOCKING_STATUSES,
+           'fields': 'villa,start_date,end_date',
+           'sort': 'start_date',
+           'limit': -1},
     )
 
-    for _ in range(6):  # for the next number of months
-        # button next month
-        button_next_month = driver.find_element(By.CLASS_NAME, 'ml-1')
-
-        # Find selected month and year
-        selected_month = driver.find_element(By.NAME, 'month')
-        month = (Select(selected_month).first_selected_option.text.
-                 replace('ä', 'a'))
-        selected_year = driver.find_element(By.NAME, 'year')
-        year = Select(selected_year).first_selected_option.text
-        month_str = f'{month} {year}'
-
-        # Find elements with the class 'date'
-        date_elements = driver.find_elements(By.CLASS_NAME, 'date')
-        date_elements = [date_element for date_element in date_elements if
-                         date_element.text in [str(i) for i in range(1, 32)]]
-        nbr_of_days = len(date_elements)
-
-        nbr_of_full_days_blocked = len(driver.find_elements(
-            By.CLASS_NAME, 'blocked-am.blocked-pm'))
-        nbr_of_checkins = len(driver.find_elements(
-            By.CLASS_NAME, 'free.blocked-am'))
-        nbr_of_checkouts = len(driver.find_elements(
-            By.CLASS_NAME, 'free.blocked-pm'))
-        nbr_of_full_days_available = (nbr_of_days - nbr_of_full_days_blocked -
-                                      nbr_of_checkins - nbr_of_checkouts)
-
-        yield month_str, nbr_of_full_days_blocked + nbr_of_checkins
-        button_next_month.click()
+    bookings = defaultdict(list)
+    for item in items:
+        if not (item['villa'] and item['start_date'] and item['end_date']):
+            continue
+        bookings[item['villa']].append((date.fromisoformat(item['start_date']),
+                                        date.fromisoformat(item['end_date'])))
+    return bookings
 
 
-def scrape_intervillas() -> list[dict]:
-    url = "https://www.intervillas-florida.com/ferienhaus-cape-coral"
+def get_blocked_dates(bookings: list[tuple[date, date]]) -> set[date]:
+    """Expand bookings into the set of blocked days.
+
+    The check-out day (`end_date`) stays available, so only the nights
+    `[start_date, end_date)` are blocked. A set also collapses the overlap
+    between adjacent bookings that share a turnover day.
+    """
+    blocked = set()
+    for start, end in bookings:
+        day = start
+        while day < end:
+            blocked.add(day)
+            day += timedelta(days=1)
+    return blocked
+
+
+def count_blocked_days(blocked_dates: set[date], year: int, month: int) -> int:
+    total_days = get_month_days(year, month)
+    return sum(date(year, month, day) in blocked_dates
+               for day in range(1, total_days + 1))
+
+
+def scrape_intervillas(today: date = None) -> list[dict]:
+    """Collect availability for every published villa.
+
+    Only months the API can actually speak to are returned; the earlier ones
+    come from the archived snapshots when the data is loaded again.
+    """
+    months = [(year, month) for year, month in month_window(today)
+              if date(year, month, 1) >= DIRECTUS_HISTORY_FLOOR]
+    labels = month_labels(months, MONTH_ABBR_DE)
+    print(f'Collecting {labels[0]} .. {labels[-1]} from the Directus API')
+
+    bookings_by_villa = get_bookings_by_villa()
+
     intervillas = []
-    for villa in get_intervillas(url):
-        villa['months'] = []
+    for villa in get_intervillas():
+        blocked_dates = get_blocked_dates(bookings_by_villa[villa['id']])
 
-        print(f'{villa["name"]}')
-        for month_str, blocked_days in (
-                get_available_and_blocked_days_intervillas(villa['url'])):
-            total_days_month = get_month_days(month_str.split(' ')[1],
-                                              month_str.split(' ')[0])
-            available_days = total_days_month - blocked_days
-            percentage_blocked = calculate_percentage_blocked(blocked_days,
-                                                              total_days_month)
-            month = {
-                'month_name': month_str,
-                'available_days': available_days,
-                'blocked_days': blocked_days,
-                'percentage_blocked': percentage_blocked
-            }
-            villa['months'].append(month)
-
-        # calculate average percentage blocked
-        villa['average_percentage_blocked'] = sum(
-            [month['percentage_blocked'] for month in villa['months']]) / len(
+        villa['months'] = [
+            make_month_entry(label, count_blocked_days(blocked_dates, *month))
+            for label, month in zip(labels, months)
+        ]
+        villa['average_percentage_blocked'] = average_percentage_blocked(
             villa['months'])
 
         intervillas.append(villa)
