@@ -1,14 +1,43 @@
-steps:
-- uses: actions/checkout@v4
-- name: Set up Python
-  uses: actions/setup-python@v5
-  with:
-    python-version: '3.x'
-- name: Install dependencies
-  run: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-- name: Test with pytest
-  run: |
-    pip install pytest pytest-cov
-    pytest tests.py --doctest-modules --junitxml=junit/test-results.xml --cov=com --cov-report=xml --cov-report=html
+name: pytest
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      # the tests never open a window, and CI has no display
+      MPLBACKEND: Agg
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # pyproject.toml requires >=3.12
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Test with pytest
+        run: |
+          pytest tests/ \
+            --junitxml=junit/test-results.xml \
+            --cov=src --cov-report=xml --cov-report=term
+
+      - name: Upload test results
+        if: always()  # keep the report even when a test fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: junit/test-results.xml

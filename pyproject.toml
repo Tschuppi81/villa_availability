@@ -15,6 +15,12 @@ dependencies = [
     "requests",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
 # No [project.scripts]: the modules import each other as `src.villa_availabitlity.*`,
 # which only resolves from the repository root. Run it with
 #   python -m src.villa_availabitlity.main
@@ -22,3 +28,9 @@ dependencies = [
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+# the modules import each other as `src.villa_availabitlity.*`, so the repo
+# root has to be importable -- otherwise only `python -m pytest` would work
+pythonpath = ["."]
+testpaths = ["tests"]

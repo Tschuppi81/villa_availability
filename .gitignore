@@ -7,6 +7,13 @@ build/
 dist/
 *.egg-info/
 
+# Test / coverage output
+.pytest_cache/
+junit/
+htmlcov/
+coverage.xml
+.coverage
+
 # Virtual environments
 venv/
 
